@@ -29,6 +29,8 @@ setup(
         "typer",
         "openai", 
         "requests",
+        "pyyaml",   # <-- add this
+        "rich",
     ],
     entry_points={
         "console_scripts": [
