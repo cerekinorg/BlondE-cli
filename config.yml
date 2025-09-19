@@ -1,0 +1,18 @@
+# Blonde CLI Configuration
+
+# Choose which model adapter to use
+# Options: openrouter, openai, hf
+default_model: openrouter
+
+models:
+  openrouter:
+    api_key: "YOUR_OPENROUTER_API_KEY"
+    model: "openai/gpt-oss-20b:free"   # example
+
+  openai:
+    api_key: "YOUR_OPENAI_API_KEY"
+    model: "gpt-4o-mini"
+
+  hf:
+    api_key: "YOUR_HF_TOKEN"
+    model: "bigcode/starcoder2-3b"
