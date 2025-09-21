@@ -4,33 +4,43 @@
 #     name="blonde-cli",
 #     version="0.1.0",
 #     packages=find_packages(),
+#     py_modules=["cli", "utils"],  # Explicitly include your modules
 #     install_requires=[
 #         "typer",
-#         "openai",
+#         "openai", 
 #         "requests",
+#         "pyyaml",   # <-- add this
+#         "rich",
 #     ],
 #     entry_points={
 #         "console_scripts": [
-#             "blnd=cli:app",  # maps "blnd" command to cli.py app
+#             "blnd=cli:app",
 #         ],
+#     },
+#     package_data={
+#         "": ["*.py"],
 #     },
 # )
 
 
-
+# In setup.py
 from setuptools import setup, find_packages
 
 setup(
     name="blonde-cli",
     version="0.1.0",
     packages=find_packages(),
-    py_modules=["cli", "utils"],  # Explicitly include your modules
+    py_modules=["cli", "utils"],
     install_requires=[
         "typer",
-        "openai", 
-        "requests",
-        "pyyaml",   # <-- add this
         "rich",
+        "pyyaml",
+        "tenacity",
+        "python-dotenv",
+        "tree-sitter",
+        "tree-sitter-languages",
+        "openai",
+        "requests",
     ],
     entry_points={
         "console_scripts": [
