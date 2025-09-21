@@ -1,0 +1,77 @@
+
+
+
+
+--- sample_project/main.py (original)
++++ sample_project/main.py (fixed)
+@@ -5,10 +5,14 @@
+     x = 10
+     y = 0   # ⚠️ Bug: division by zero
+     print("Sum:", add(x, y))
+-    print("Division:", divide(x, y))  # will crash
++    try:
++        result = divide(x, y)
++    except ZeroDivisionError:
++        result = "Error: Division by zero"
++    print("Division:", result)
+ 
+     # Using config
+-    print("App name:", SETTINGS["app_name"])
++    print("App name:", SETTINGS.get("app_name", "Unknown"))
+ 
+ if __name__ == "__main__":
+     main()
+
+
+
+--- sample_project/utils.py (original)
++++ sample_project/utils.py (fixed)
+@@ -2,4 +2,6 @@
+     return a + b
+ 
+ def divide(a, b):
+-    return a / b   # ⚠️ Bug: no error handling
++    if b == 0:
++        raise ValueError("Division by zero is not allowed.")
++    return a / b
+
+--- sample_project/README.md (original)
++++ sample_project/README.md (fixed)
+@@ -1,4 +1,5 @@
+ # Sample Project
++
+ A small broken project for testing **Blonde CLI repo scanning + fixing**.
+ 
+ - `main.py` calls functions from `utils.py` and uses `config.py`
+
+--- sample_project/main.py (original)
++++ sample_project/main.py (fixed)
+@@ -5,10 +5,16 @@
+     x = 10
+     y = 0   # ⚠️ Bug: division by zero
+     print("Sum:", add(x, y))
+-    print("Division:", divide(x, y))  # will crash
++    try:
++        result = divide(x, y)
++    except ZeroDivisionError:
++        result = None
++        print("Division: Error - division by zero")
++    else:
++        print("Division:", result)
+ 
+     # Using config
+-    print("App name:", SETTINGS["app_name"])
++    print("App name:", SETTINGS.get("app_name", "Unknown"))
+ 
+ if __name__ == "__main__":
+     main()
+
+--- sample_project/config.py (original)
++++ sample_project/config.py (fixed)
+@@ -1,4 +1,4 @@
+ SETTINGS = {
+     "app_name": "BlondE Test App",
+-    "version": 1.0
++    "version": "1.0",
+ }
+
