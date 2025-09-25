@@ -3,7 +3,7 @@ from config import SETTINGS
 
 def main():
     x = 10
-    y = 0   # ⚠️ Bug: division by zero
+    y = 2   # Fixed: avoid division by zero
     print("Sum:", add(x, y))
     try:
         division_result = divide(x, y)
