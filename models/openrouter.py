@@ -59,12 +59,14 @@ import os
 import requests
 import json
 from tenacity import retry, stop_after_attempt, wait_fixed
+from cli import load_api_key
 from utils import setup_logging
 
 class OpenRouterAdapter:
     def __init__(self, debug: bool = False):
         self.logger = setup_logging(debug)
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
+        # self.api_key = os.getenv("OPENROUTER_API_KEY")
+        self.api_key = os.getenv("OPENROUTER_API_KEY") or load_api_key("OPENROUTER_API_KEY")
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY is not set")
         self.api_url = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions")
