@@ -33,3 +33,7 @@ def setup_logging(debug: bool = False):
     logger.addHandler(console_handler)
 
     return logger
+
+
+
+
