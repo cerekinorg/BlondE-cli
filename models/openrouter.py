@@ -59,8 +59,7 @@ import os
 import requests
 import json
 from tenacity import retry, stop_after_attempt, wait_fixed
-from cli import load_api_key
-from utils import setup_logging
+from utils import load_api_key, setup_logging
 
 class OpenRouterAdapter:
     def __init__(self, debug: bool = False):

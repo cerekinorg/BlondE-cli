@@ -1,7 +1,12 @@
 # In utils.py (create if not exists)
 import logging
 import os
+import json
 from pathlib import Path
+
+# Configuration file path
+CONFIG_FILE = Path.home() / ".blonde" / "config.json"
+CONFIG_FILE.parent.mkdir(exist_ok=True)
 
 def setup_logging(debug: bool = False):
     """Sets up logging to file and console.
@@ -33,6 +38,35 @@ def setup_logging(debug: bool = False):
     logger.addHandler(console_handler)
 
     return logger
+
+
+def save_api_key(key_name: str, key_value: str):
+    """Save API key to local config file.
+    
+    Args:
+        key_name: Name of the API key (e.g., 'OPENAI_API_KEY')
+        key_value: The API key value
+    """
+    config = {}
+    if CONFIG_FILE.exists():
+        config = json.loads(CONFIG_FILE.read_text())
+    config[key_name] = key_value
+    CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+
+def load_api_key(key_name: str) -> str:
+    """Load API key from local config file.
+    
+    Args:
+        key_name: Name of the API key to load
+        
+    Returns:
+        API key value or empty string if not found
+    """
+    if CONFIG_FILE.exists():
+        config = json.loads(CONFIG_FILE.read_text())
+        return config.get(key_name, "")
+    return ""
 
 
 
