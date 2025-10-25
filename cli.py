@@ -27,6 +27,30 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 from dotenv import load_dotenv
 import magic
 from git import Repo
+from utils import save_api_key, load_api_key
+
+# Import memory and tools for context-aware and agentic capabilities
+try:
+    from memory import MemoryManager
+    MEMORY_AVAILABLE = True
+except ImportError:
+    MEMORY_AVAILABLE = False
+    logger = logging.getLogger("blonde")
+    logger.debug("Memory system not available. Install dependencies: pip install chromadb")
+
+try:
+    from tools import ToolRegistry
+    TOOLS_AVAILABLE = True
+except ImportError:
+    TOOLS_AVAILABLE = False
+    logger = logging.getLogger("blonde")
+    logger.debug("Tools system not available.")
+
+try:
+    from model_selector import select_model
+    MODEL_SELECTOR_AVAILABLE = True
+except ImportError:
+    MODEL_SELECTOR_AVAILABLE = False
 
 console = Console()
 app = typer.Typer()
@@ -73,28 +97,15 @@ CONFIG_FILE.parent.mkdir(exist_ok=True)
 
 
 # =====================
-#  Utilities (To Extract to utils.py Later)
+#  Utilities
 # =====================
-
-def save_api_key(key_name: str, key_value: str):
-    config = {}
-    if CONFIG_FILE.exists():
-        config = json.loads(CONFIG_FILE.read_text())
-    config[key_name] = key_value
-    CONFIG_FILE.write_text(json.dumps(config))
-    console.print(f"[green]{key_name} saved locally![/green]")
-
-def load_api_key(key_name: str) -> str:
-    if CONFIG_FILE.exists():
-        config = json.loads(CONFIG_FILE.read_text())
-        return config.get(key_name)
-    return ""
 
 @app.command()
 def set_key(model: str, key: str):
     """Set API key for a model."""
     key_name = f"{model.upper()}_API_KEY"
     save_api_key(key_name, key)
+    console.print(f"[green]{key_name} saved locally![/green]")
 
 
 def detect_language(file_path: str) -> str:
@@ -446,32 +457,98 @@ def main(
     HISTORY_FILE = Path.home() / f".blonde_history_{model_name_lower}.json"
 
 @app.command()
-def chat(debug: bool = typer.Option(False, help="Enable debug logging"),
-         offline: bool = typer.Option(False, help="Use offline GGUF model"),
-    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)")):
-    """Interactive chat with Blonde."""
+def chat(
+    debug: bool = typer.Option(False, help="Enable debug logging"),
+    offline: bool = typer.Option(False, help="Use offline GGUF model"),
+    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)"),
+    memory: bool = typer.Option(True, help="Enable context memory (remembers past conversations)"),
+    agentic: bool = typer.Option(False, help="Enable agentic mode (AI can use tools)"),
+    stream: bool = typer.Option(True, help="Stream responses for better UX")
+):
+    """Interactive chat with Blonde - now with memory and agentic capabilities!"""
     global bot
-    # bot = load_adapter(debug=debug)
+    
+    # Interactive model selection for offline mode
+    if offline and not model and MODEL_SELECTOR_AVAILABLE:
+        selection = select_model()
+        if selection is None:
+            console.print("[yellow]Cancelled. Exiting.[/yellow]")
+            return
+        
+        repo, file, is_cached, path = selection
+        if is_cached and path:
+            # Use the cached model directly
+            model = f"{repo}/{file}"
+        else:
+            # Will download
+            model = f"{repo}/{file}"
+    
     bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
+    
+    # Initialize memory manager if enabled
+    memory_manager = None
+    if memory and MEMORY_AVAILABLE:
+        try:
+            memory_manager = MemoryManager(user_id="default", enable_vector_store=True)
+            console.print("[dim]✓ Memory enabled - I'll remember our conversation![/dim]")
+        except Exception as e:
+            logger.warning(f"Failed to initialize memory: {e}")
+            console.print("[yellow]⚠ Memory disabled - install chromadb to enable[/yellow]")
+    
+    # Initialize tool registry if agentic mode enabled
+    tool_registry = None
+    if agentic and TOOLS_AVAILABLE:
+        try:
+            tool_registry = ToolRegistry(require_confirmation=True, log_calls=True)
+            console.print("[dim]✓ Agentic mode enabled - I can help with tasks![/dim]")
+        except Exception as e:
+            logger.warning(f"Failed to initialize tools: {e}")
+            console.print("[yellow]⚠ Agentic mode disabled[/yellow]")
+    
     animate_logo()
-    console.print(Panel(Text("Type your prompt below. Use /help for commands.", justify="left"), border_style="cyan"))
+    
+    # Enhanced welcome message
+    welcome_parts = ["Type your prompt below. Use /help for commands."]
+    if memory_manager:
+        welcome_parts.append("💭 Memory: ON")
+    if tool_registry:
+        welcome_parts.append("🔧 Agentic: ON")
+    if stream:
+        welcome_parts.append("⚡ Streaming: ON")
+    
+    console.print(Panel(Text(" | ".join(welcome_parts), justify="center"), border_style="cyan"))
 
     chat_history = load_history()
 
     while True:
         user_input = Prompt.ask("[bold green]You[/bold green]")
         
+        # Handle exit commands
         if user_input.lower() in ("exit", "quit"):
             save_history(chat_history)
-            console.print("[bold red]Goodbye![/bold red]")
+            if memory_manager:
+                console.print("[dim]💾 Saving memories...[/dim]")
+            console.print("[bold red]Goodbye! 👋[/bold red]")
             break
+            
+        # Handle /help command
         if user_input.lower() == "/help":
-            console.print(Panel(Text(HELP_TEXT, justify="left"), border_style="cyan"))
+            enhanced_help = HELP_TEXT + "\n[green]Enhanced Commands:[/green]\n"
+            enhanced_help += " • [bold]/memory[/bold] → show memory stats\n"
+            enhanced_help += " • [bold]/tools[/bold] → list available tools\n"
+            enhanced_help += " • [bold]/context[/bold] → show conversation context\n"
+            console.print(Panel(Text(enhanced_help, justify="left"), border_style="cyan"))
             continue
+            
+        # Handle /clear command
         if user_input.lower() == "/clear":
             chat_history = []
-            console.print("[bold yellow]Chat cleared.[/yellow]")
+            if memory_manager:
+                memory_manager.clear_session()
+            console.print("[bold yellow]💨 Chat and memory cleared.[/yellow]")
             continue
+            
+        # Handle /save command
         if user_input.lower() == "/save":
             out_file = "blonde_chat.md"
             with open(out_file, "w") as f:
@@ -479,21 +556,60 @@ def chat(debug: bool = typer.Option(False, help="Enable debug logging"),
                     f.write(f"**{sender}:** {msg}\n\n")
             console.print(f"[bold green]💾 Chat exported to {out_file}[/bold green]")
             continue
+        
+        # NEW: Handle /memory command
+        if user_input.lower() == "/memory" and memory_manager:
+            memory_manager.show_session_state()
+            continue
+            
+        # NEW: Handle /tools command
+        if user_input.lower() == "/tools" and tool_registry:
+            tools_list = tool_registry.list_tools()
+            console.print(Panel(f"[cyan]Available tools: {', '.join(tools_list)}[/cyan]", 
+                              border_style="cyan"))
+            continue
+            
+        # NEW: Handle /context command
+        if user_input.lower() == "/context" and memory_manager:
+            context = memory_manager.get_context_for_prompt(user_input, max_context_length=500)
+            console.print(Panel(f"[dim]{context}[/dim]", title="Current Context", border_style="cyan"))
+            continue
 
+        # Terminal command suggestions
         suggestion = suggest_terminal_command(user_input)
-        if suggestion:
+        if suggestion and not agentic:
             console.print(suggestion)
             if Prompt.ask("Run it? [y/n]", default="n") == "y":
                 os.system(suggestion.replace("[yellow]Suggested command: ", "").strip())
             continue
 
+        # Add to chat history
         chat_history.append(("You", user_input))
+        
+        # Build context-aware prompt
+        prompt = user_input
+        if memory_manager:
+            # Retrieve relevant context from long-term memory
+            context = memory_manager.get_context_for_prompt(user_input, max_context_length=2000)
+            if context:
+                prompt = f"Context from previous conversations:\n{context}\n\nCurrent query: {user_input}"
+        
         console.print("[magenta]Blonde:[/magenta]")
         try:
-            response = get_response(user_input, debug)
+            # Get response with streaming if enabled
+            if stream:
+                response = get_response(prompt, debug)
+                stream_response(response)
+            else:
+                response = get_response(prompt, debug)
+                render_code_blocks(response)
+            
             chat_history.append(("Blonde", response))
-            # stream_response(response)
-            render_code_blocks(response)
+            
+            # Store in memory if enabled
+            if memory_manager:
+                memory_manager.add_conversation(user_input, response)
+                
         except Exception as e:
             logger.error(f"Chat error: {e}")
             console.print(f"[red]Error: {e}[/red]")
@@ -504,21 +620,66 @@ def chat(debug: bool = typer.Option(False, help="Enable debug logging"),
 
 
 @app.command()
-def gen(prompt: str, debug: bool = typer.Option(False, help="Enable debug logging"),
+def gen(
+    prompt: str, 
+    debug: bool = typer.Option(False, help="Enable debug logging"),
     offline: bool = typer.Option(False, help="Use offline GGUF model"),
-    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)")
-    ):
-    """Generate code from a prompt.
-    Why it works: Renders API-generated code with spinner.
-    Pitfalls: Large prompts may hit API limits.
-    Learning: Explore prompt engineering.
+    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)"),
+    memory: bool = typer.Option(True, help="Enable context memory for better generation"),
+    save: str = typer.Option(None, help="Save generated code to file"),
+    lang: str = typer.Option(None, help="Target language (python, javascript, etc)")
+):
+    """Generate code from a prompt with context awareness.
+    
+    Enhanced with memory to remember past code patterns and preferences.
     """
     global bot
-    # bot = load_adapter(debug=debug)
+    
+    # Interactive model selection for offline mode
+    if offline and not model and MODEL_SELECTOR_AVAILABLE:
+        selection = select_model()
+        if selection is None:
+            console.print("[yellow]Cancelled. Exiting.[/yellow]")
+            return
+        repo, file, is_cached, path = selection
+        model = f"{repo}/{file}"
+    
     bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
-    console.print(Panel("Blonde CLI - Generating Code", style="bold cyan"))
-    response = get_response(prompt, debug)
+    
+    # Initialize memory if enabled
+    memory_manager = None
+    if memory and MEMORY_AVAILABLE:
+        try:
+            memory_manager = MemoryManager(user_id="default", enable_vector_store=True)
+        except Exception as e:
+            logger.warning(f"Memory disabled: {e}")
+    
+    console.print(Panel("Blonde CLI - Context-Aware Code Generation", style="bold cyan"))
+    
+    # Build context-aware prompt
+    enhanced_prompt = prompt
+    if memory_manager:
+        context = memory_manager.get_context_for_prompt(prompt, max_context_length=1500)
+        if context:
+            enhanced_prompt = f"Previous code context:\n{context}\n\nNew request: {prompt}"
+            console.print("[dim]✓ Using relevant context from memory[/dim]")
+    
+    if lang:
+        enhanced_prompt = f"Generate code in {lang}:\n{enhanced_prompt}"
+    
+    response = get_response(enhanced_prompt, debug)
     render_code_blocks(response)
+    
+    # Store in memory for future reference
+    if memory_manager:
+        memory_manager.add_conversation(f"Code generation: {prompt}", response)
+    
+    # Save to file if requested
+    if save:
+        code = extract_code(response)
+        with open(save, "w", encoding="utf-8") as f:
+            f.write(code)
+        console.print(f"[green]✓ Code saved to {save}[/green]")
 
 @app.command()
 def create(
@@ -526,47 +687,139 @@ def create(
     file: str,
     debug: bool = typer.Option(False, help="Enable debug logging"),
     offline: bool = typer.Option(False, help="Use offline GGUF model"),
-    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)")
+    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)"),
+    memory: bool = typer.Option(True, help="Enable context memory"),
+    agentic: bool = typer.Option(False, help="Enable agentic mode (auto-create related files)"),
+    iterative: bool = typer.Option(False, help="Enable iterative refinement"),
+    with_tests: bool = typer.Option(False, help="Generate unit tests alongside code")
 ):
-    """Create a new code file from a description.
-    Args:
-        description: What the file should do.
-        file: Output file path.
-    Why it works: Generates code with repo context, previews before saving.
-    Pitfalls: Overwriting existing files; added confirmation.
-    Learning: Study repo scanning for context-aware generation.
+    """Create a new code file with context awareness and agentic capabilities.
+    
+    Enhanced features:
+    - Memory: Learns from past file creations
+    - Agentic: Can suggest and create related files
+    - Iterative: Refine the code before saving
+    - Tests: Auto-generate unit tests
     """
     global bot
-    # bot = load_adapter(debug=debug)
+    
+    # Interactive model selection for offline mode
+    if offline and not model and MODEL_SELECTOR_AVAILABLE:
+        selection = select_model()
+        if selection is None:
+            console.print("[yellow]Cancelled. Exiting.[/yellow]")
+            return
+        repo, file_model, is_cached, path = selection
+        model = f"{repo}/{file_model}"
+    
     bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
-    console.print(Panel("Blonde CLI - Creating File", style="bold cyan"))
+    
+    # Initialize memory and tools
+    memory_manager = None
+    tool_registry = None
+    
+    if memory and MEMORY_AVAILABLE:
+        try:
+            memory_manager = MemoryManager(user_id="default", enable_vector_store=True)
+            console.print("[dim]✓ Memory enabled[/dim]")
+        except Exception as e:
+            logger.warning(f"Memory disabled: {e}")
+    
+    if agentic and TOOLS_AVAILABLE:
+        try:
+            tool_registry = ToolRegistry(require_confirmation=True, log_calls=True)
+            console.print("[dim]✓ Agentic mode enabled[/dim]")
+        except Exception as e:
+            logger.warning(f"Agentic mode disabled: {e}")
+    
+    console.print(Panel("Blonde CLI - Intelligent File Creation", style="bold cyan"))
 
     repo_path = os.path.dirname(file) if os.path.dirname(file) else "."
     repo_map = scan_repo(repo_path) if os.path.isdir(repo_path) else {}
     context = str(repo_map)[:2000]
     lang = detect_language(file)
+    
+    # Build enhanced prompt with memory context
+    enhanced_description = description
+    if memory_manager:
+        mem_context = memory_manager.get_context_for_prompt(description, max_context_length=1000)
+        if mem_context:
+            enhanced_description = f"Context from similar past files:\n{mem_context}\n\nNew file description: {description}"
+            console.print("[dim]✓ Using relevant context from memory[/dim]")
+    
     prompt = f"""
     You are a code generator. Given this description and repo context, output ONLY the source code for a new file.
     Use language: {lang}.
     Repo context: {context}
-    Description: {description}
+    Description: {enhanced_description}
     Output code:
     """
     response = get_response(prompt, debug)
     cleaned = extract_code(response)
+    
+    # Iterative refinement
+    if iterative:
+        max_iters = 3
+        for i in range(max_iters):
+            console.print(Panel(f"Refinement Iteration {i+1}/{max_iters}", style="yellow"))
+            console.print(Syntax(cleaned, lang, theme="monokai", line_numbers=True))
+            feedback = Prompt.ask("[green]Feedback (or 'done')[/green]", default="done")
+            if feedback.lower() == "done":
+                break
+            refine_prompt = f"""
+            Refine this code based on feedback: {feedback}
+            Current code: {cleaned}
+            Output ONLY the refined source code (language: {lang}).
+            """
+            cleaned = extract_code(get_response(refine_prompt, debug))
 
     console.print("\n[bold yellow]Preview of generated file:[/bold yellow]")
     console.print(Syntax(cleaned, lang, theme="monokai", line_numbers=True))
+
+    # Agentic suggestions for related files
+    if agentic and tool_registry:
+        suggestion_prompt = f"""
+        Given this new file and its purpose, what related files should be created?
+        File: {file}
+        Description: {description}
+        
+        Suggest 1-3 related files (e.g., tests, config, documentation).
+        Format: filename: purpose
+        """
+        suggestions = get_response(suggestion_prompt, debug)
+        console.print(Panel(f"[cyan]Suggested related files:\n{suggestions}[/cyan]", 
+                          title="Agentic Suggestions", border_style="cyan"))
+        if Prompt.ask("Create suggested files?", choices=["y", "n"], default="n") == "y":
+            console.print("[yellow]Agentic file creation will be added in future version[/yellow]")
 
     if os.path.exists(file):
         if Prompt.ask(f"[yellow]{file} exists. Overwrite?[/yellow]", choices=["y", "n"], default="n") == "n":
             console.print("[red]Creation discarded.[/red]")
             return
+    
     choice = Prompt.ask("\nSave file?", choices=["y", "n"], default="y")
     if choice == "y":
         with open(file, "w", encoding="utf-8") as f:
             f.write(cleaned)
-        console.print(f"[green]File created: {file}[/green]")
+        console.print(f"[green]✓ File created: {file}[/green]")
+        
+        # Store in memory
+        if memory_manager:
+            memory_manager.add_conversation(f"Created file {file}: {description}", cleaned[:500])
+        
+        # Generate tests if requested
+        if with_tests:
+            test_file = file.replace(".py", "_test.py").replace(".js", ".test.js")
+            test_prompt = f"""
+            Generate unit tests for this code:
+            {cleaned}
+            
+            Output ONLY the test code in {lang}.
+            """
+            test_code = extract_code(get_response(test_prompt, debug))
+            with open(test_file, "w", encoding="utf-8") as f:
+                f.write(test_code)
+            console.print(f"[green]✓ Tests created: {test_file}[/green]")
     else:
         console.print("[red]Creation discarded.[/red]")
 
@@ -583,25 +836,34 @@ def fix(
     skip_errors: bool = typer.Option(False, help="Skip files with errors and continue"),
     debug: bool = typer.Option(False, help="Enable debug logging"),
     offline: bool = typer.Option(False, help="Use offline GGUF model"),
-    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)")
+    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)"),
+    memory: bool = typer.Option(True, help="Enable context memory for better fixes")
 ):
-    """Fix bugs in a file or folder.
-    Args:
-        path: File or folder to fix.
-        export: Export diffs to a file or directory.
-        preview: Show all diffs before applying.
-        iterative: Enable refinement mode.
-        suggest: Show structured suggestions.
-        git_commit: Auto-commit to git.
-        skip_errors: Skip files with errors.
-        debug: Enable debug logging.
-    Why it works: Processes files with repo context, handles errors, supports git.
-    Pitfalls: Large repos may hit API limits; use --skip-errors.
-    Learning: Study unified_diff for diff formatting, GitPython for commits.
+    """Fix bugs with context awareness from past fixes.
+    
+    Enhanced with memory to learn from previous bug fixes and apply similar patterns.
     """
     global bot, repo_map_cache
-    # bot = load_adapter(debug=debug)
+    
+    # Interactive model selection for offline mode
+    if offline and not model and MODEL_SELECTOR_AVAILABLE:
+        selection = select_model()
+        if selection is None:
+            console.print("[yellow]Cancelled. Exiting.[/yellow]")
+            return
+        repo, file, is_cached, path = selection
+        model = f"{repo}/{file}"
+    
     bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
+    
+    # Initialize memory
+    memory_manager = None
+    if memory and MEMORY_AVAILABLE:
+        try:
+            memory_manager = MemoryManager(user_id="default", enable_vector_store=True)
+            console.print("[dim]✓ Memory enabled - learning from past fixes[/dim]")
+        except Exception as e:
+            logger.warning(f"Memory disabled: {e}")
     console.print(Panel("Blonde CLI - Fixing Codebase", style="bold cyan"))
 
     diffs = []
@@ -613,7 +875,7 @@ def fix(
             for relative_path in repo_map_cache[path]:
                 file_path = os.path.join(path, relative_path)
                 try:
-                    diff = _fix_file(file_path, repo_map_cache[path], export, preview, iterative, suggest, debug)
+                    diff = _fix_file(file_path, repo_map_cache[path], export, preview, iterative, suggest, debug, memory_manager)
                     if diff:
                         diffs.append(diff)
                 except Exception as e:
@@ -626,7 +888,7 @@ def fix(
                     progress.update(task, advance=1)
     else:
         try:
-            diff = _fix_file(path, repo_map_cache.get(os.path.dirname(path)), export, preview, iterative, suggest, debug)
+            diff = _fix_file(path, repo_map_cache.get(os.path.dirname(path)), export, preview, iterative, suggest, debug, memory_manager)
             if diff:
                 diffs.append(diff)
         except Exception as e:
@@ -688,8 +950,8 @@ def fix(
         else:
             console.print("[yellow]Not a git repo; skipping commit.[/yellow]")
 
-def _fix_file(file: str, repo_map: dict | None, export: str | None, preview: bool, iterative: bool, suggest: bool, debug: bool) -> tuple | None:
-    """Internal helper to fix one file with repo context.
+def _fix_file(file: str, repo_map: dict | None, export: str | None, preview: bool, iterative: bool, suggest: bool, debug: bool, memory_manager=None) -> tuple | None:
+    """Internal helper to fix one file with repo context and memory.
     Args:
         file: Path to file.
         repo_map: Repository metadata from scan_repo.
@@ -698,11 +960,10 @@ def _fix_file(file: str, repo_map: dict | None, export: str | None, preview: boo
         iterative: Enable refinement mode.
         suggest: Show structured suggestions.
         debug: Enable debug logging.
+        memory_manager: Optional memory manager for context-aware fixes.
     Returns:
         Tuple (file, (original, cleaned, diff_text, suggestion)) or None.
-    Why it works: Always returns consistent tuple, validates code.
-    Pitfalls: API failures may return empty code; validate responses.
-    Learning: Study difflib for diff customization.
+    Why it works: Uses memory to learn from past fixes and apply patterns.
     """
     try:
         with open(file, "r", encoding="utf-8") as f:
@@ -714,6 +975,13 @@ def _fix_file(file: str, repo_map: dict | None, export: str | None, preview: boo
 
     lang = detect_language(file)
     context = str(repo_map)[:2000] if repo_map else ""
+    
+    # Add memory context for better fixes
+    memory_context = ""
+    if memory_manager:
+        mem_ctx = memory_manager.get_context_for_prompt(f"fixing {lang} code", max_context_length=800)
+        if mem_ctx:
+            memory_context = f"\n\nLearned patterns from past fixes:\n{mem_ctx}"
 
     suggestion = ""
     if suggest:
@@ -722,7 +990,7 @@ def _fix_file(file: str, repo_map: dict | None, export: str | None, preview: boo
         - Issue: What's wrong (e.g., "Potential division by zero")
         - Fix: Proposed change (e.g., "Add error handling")
         - Impact: Why it matters (e.g., "Prevents runtime errors")
-        Repo context: {context}
+        Repo context: {context}{memory_context}
         File ({file}, language: {lang}):
         {original}
         """
@@ -731,7 +999,7 @@ def _fix_file(file: str, repo_map: dict | None, export: str | None, preview: boo
 
     prompt = f"""
     You are a professional code fixer.
-    Repository map (for context): {context}
+    Repository map (for context): {context}{memory_context}
     Given the following file, output ONLY the corrected source code.
     Use language: {lang}.
     Do not include explanations, notes, or markdown fences.
@@ -806,6 +1074,13 @@ def _fix_file(file: str, repo_map: dict | None, export: str | None, preview: boo
             with open(file, "w", encoding="utf-8") as f:
                 f.write(cleaned)
             console.print(f"[green]Changes applied to {file}[/green]")
+            
+            # Store fix in memory for learning
+            if memory_manager:
+                memory_manager.add_conversation(
+                    f"Fixed {lang} file: {file}", 
+                    f"Applied fix pattern. Diff summary: {diff_text[:300]}"
+                )
         elif choice == "save-as":
             ext = file.split(".")[-1]
             save_as = file.replace(f".{ext}", f"_fixed.{ext}")
@@ -839,21 +1114,38 @@ def doc(
     format: str = typer.Option("md", help="Output format: md, txt"),
     debug: bool = typer.Option(False, help="Enable debug logging"),
     offline: bool = typer.Option(False, help="Use offline GGUF model"),
-    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)")
+    model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)"),
+    memory: bool = typer.Option(True, help="Enable context memory for better documentation"),
+    style: str = typer.Option("detailed", help="Documentation style: concise, detailed, tutorial")
 ):
-    """Explain code in a file or folder in plain English.
-    Args:
-        path: File or folder to document.
-        export: Export documentation to a file.
-        format: Output format (md or txt).
-        debug: Enable debug logging.
-    Why it works: Generates clear documentation with repo context.
-    Pitfalls: Large repos may overwhelm API.
-    Learning: Study Markdown for structured documentation.
+    """Generate context-aware documentation with memory.
+    
+    Enhanced features:
+    - Memory: Learns documentation patterns
+    - Styles: Choose between concise, detailed, or tutorial formats
+    - Context: Uses past documentation for consistency
     """
     global bot
-    # bot = load_adapter(debug=debug)
+    
+    # Interactive model selection for offline mode
+    if offline and not model and MODEL_SELECTOR_AVAILABLE:
+        selection = select_model()
+        if selection is None:
+            console.print("[yellow]Cancelled. Exiting.[/yellow]")
+            return
+        repo, file, is_cached, path = selection
+        model = f"{repo}/{file}"
+    
     bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
+    
+    # Initialize memory
+    memory_manager = None
+    if memory and MEMORY_AVAILABLE:
+        try:
+            memory_manager = MemoryManager(user_id="default", enable_vector_store=True)
+            console.print("[dim]✓ Memory enabled - consistent documentation style[/dim]")
+        except Exception as e:
+            logger.warning(f"Memory disabled: {e}")
     console.print(Panel("Blonde CLI - Documenting Codebase", style="bold cyan"))
 
     if os.path.isdir(path):
@@ -871,31 +1163,76 @@ def doc(
                     logger.debug(f"Doc error for {rel_path}: {e}")
                 progress.update(task, advance=1)
 
+        # Build style-specific instructions
+        style_instructions = {
+            "concise": "Provide brief, one-line summaries for each component.",
+            "detailed": "Provide comprehensive explanations with examples and usage patterns.",
+            "tutorial": "Provide step-by-step explanations suitable for learning, with code examples."
+        }
+        style_guide = style_instructions.get(style, style_instructions["detailed"])
+        
+        # Get memory context for consistent documentation
+        mem_context = ""
+        if memory_manager:
+            mem_ctx = memory_manager.get_context_for_prompt("documentation patterns", max_context_length=500)
+            if mem_ctx:
+                mem_context = f"\n\nConsistent documentation style from past docs:\n{mem_ctx}"
+        
         prompt = f"""
-        You are a code documentation expert. Given the repository structure and file contents below, provide a concise Markdown summary of the codebase. For each file, list:
+        You are a code documentation expert. Given the repository structure and file contents below, provide a Markdown summary of the codebase.
+        Documentation style: {style_guide}
+        For each file, list:
         - Purpose
         - Key functions/classes
         - Dependencies (imports)
         - One-line summary
-        Group by module/folder if applicable. Output only the Markdown summary.
+        Group by module/folder if applicable. Output only the Markdown summary.{mem_context}
         {chr(10).join(context)}
         """
         response = get_response(prompt, debug)
     else:
         with open(path, "r", encoding="utf-8") as f:
             code = f.read()
-        prompt = f"Explain this code in plain English, in Markdown format:\n{code}"
+        
+        # Add memory context for single file documentation
+        mem_context = ""
+        if memory_manager:
+            mem_ctx = memory_manager.get_context_for_prompt("code documentation", max_context_length=400)
+            if mem_ctx:
+                mem_context = f"\n\nConsistent style from past docs:\n{mem_ctx}"
+        
+        style_instructions = {
+            "concise": "Provide a brief explanation in 2-3 paragraphs.",
+            "detailed": "Provide a comprehensive explanation with usage examples.",
+            "tutorial": "Explain as if teaching a beginner, with step-by-step breakdown."
+        }
+        style_guide = style_instructions.get(style, style_instructions["detailed"])
+        
+        prompt = f"""
+        Explain this code in plain English, in Markdown format.
+        Style: {style_guide}{mem_context}
+        
+        Code:
+        {code}
+        """
         response = get_response(prompt, debug)
 
     if format == "txt":
         response = re.sub(r"[`*#\[\]]", "", response)
     
     render_code_blocks(response)
+    
+    # Store documentation pattern in memory
+    if memory_manager:
+        memory_manager.add_conversation(
+            f"Generated {style} documentation for: {path}",
+            response[:500]  # Store summary for future reference
+        )
 
     if export:
         with open(export, "w", encoding="utf-8") as f:
             f.write(response)
-        console.print(f"[green]Documentation exported to {export}[/green]")
+        console.print(f"[green]✓ Documentation exported to {export}[/green]")
 
 
 def is_git_repo(path: str) -> bool:

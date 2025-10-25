@@ -9,17 +9,29 @@ ENV LC_ALL=C.UTF-8
 # Set working directory
 WORKDIR /app
 
-# Copy Python package files
-COPY setup.py pyproject.toml /app/
-COPY cli.py utils.py /app/
-# COPY .env.example /app/.env   # optional
+# Set up environment
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+ENV BLONDE_HOME=/home/blonde/.blonde
 
-# Install build tools
-RUN pip install --upgrade pip setuptools wheel
+# Switch to non-root user
+USER blonde
 
-# Install dependencies
-RUN pip install .
+# Create workspace directory
+WORKDIR /workspace
+VOLUME ["/workspace", "/home/blonde/.blonde"]
 
-# Make CLI executable
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD blnd --help || exit 1
+
+# Default command
 ENTRYPOINT ["blnd"]
 CMD ["--help"]
+
+# Labels for metadata
+LABEL maintainer="Cerekin <support@cerekin.com>"
+LABEL description="BlondE-CLI - AI-powered code assistant with memory and agentic capabilities"
+LABEL version="1.0.0"
+LABEL org.opencontainers.image.source="https://github.com/cerekin/blonde-cli"
+LABEL org.opencontainers.image.licenses="MIT"

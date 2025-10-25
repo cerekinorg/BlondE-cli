@@ -303,6 +303,46 @@ class MemoryManager:
             except Exception as e:
                 logger.error(f"Failed to clear vector store: {e}")
     
+    def get_context_for_prompt(self, query: str, max_context_length: int = 2000) -> str:
+        """
+        Get relevant context for a prompt by combining session state and semantic search.
+        
+        Args:
+            query: The user's query/prompt
+            max_context_length: Maximum characters to return
+            
+        Returns:
+            Formatted context string for injection into LLM prompts
+        """
+        context_parts = []
+        
+        # Add session context (goals, tasks, etc.)
+        session_ctx = self.get_session_context()
+        if session_ctx and session_ctx != "No active session context.":
+            context_parts.append("# Session Context")
+            context_parts.append(session_ctx)
+        
+        # Add relevant memories from vector store
+        if self.vector_store_enabled:
+            try:
+                relevant_memories = self.retrieve_relevant_context(query, n_results=3)
+                if relevant_memories:
+                    context_parts.append("\n# Relevant Past Conversations")
+                    for i, memory in enumerate(relevant_memories, 1):
+                        # Truncate each memory to avoid overflow
+                        truncated = memory[:500] + "..." if len(memory) > 500 else memory
+                        context_parts.append(f"## Memory {i}")
+                        context_parts.append(truncated)
+            except Exception as e:
+                logger.error(f"Failed to retrieve memories: {e}")
+        
+        # Join and truncate to max length
+        full_context = "\n".join(context_parts)
+        if len(full_context) > max_context_length:
+            full_context = full_context[:max_context_length] + "\n... (context truncated)"
+        
+        return full_context if full_context.strip() else ""
+    
     def export_memory(self, output_file: str):
         """
         Export all memory to JSON file.
