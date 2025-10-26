@@ -70,11 +70,26 @@ def find_cached_models() -> List[Dict[str, str]]:
     if cache_dir.exists():
         for model_file in cache_dir.rglob("*.gguf"):
             size_mb = model_file.stat().st_size / (1024 * 1024)
+            
+            # Extract repo name from HuggingFace cache structure
+            # Structure: models--{OWNER}--{NAME}/snapshots/{HASH}/{FILE}
+            repo_name = "Unknown"
+            try:
+                # Walk up to find the models-- directory
+                parts = model_file.parts
+                for i, part in enumerate(parts):
+                    if part.startswith("models--"):
+                        # Convert models--TheBloke--phi-2-GGUF to TheBloke/phi-2-GGUF
+                        repo_name = part.replace("models--", "").replace("--", "/", 1)
+                        break
+            except Exception:
+                repo_name = "Unknown"
+            
             cached.append({
                 "file": model_file.name,
                 "path": str(model_file),
                 "size": f"{size_mb:.1f}MB",
-                "repo": model_file.parent.name if model_file.parent != cache_dir else "Unknown"
+                "repo": repo_name
             })
     
     return cached
@@ -132,10 +147,12 @@ def select_model() -> Optional[tuple]:
     Returns:
         Tuple of (model_repo, model_file, is_cached, cache_path) or None if cancelled
     """
-    console.clear()
+    # Don't clear screen - keep previous messages visible
+    console.print()
     console.print(Panel(
         Text("🤖 BlondE-CLI Local Model Selector", justify="center", style="bold cyan"),
-        border_style="cyan"
+        border_style="cyan",
+        padding=(1, 2)
     ))
     console.print()
     
@@ -179,33 +196,19 @@ def select_model() -> Optional[tuple]:
                 console.print("[red]Invalid input.[/red]")
                 return None
     else:
-        console.print("[yellow]No cached models found. Let's download one![/yellow]")
+        console.print("[yellow]No cached models found.[/yellow]")
         console.print()
     
     # Show downloadable models
     display_downloadable_models()
     console.print()
     
-    # Recommend CodeLlama if nothing cached
+    # Show recommendation but always let user choose
     if not cached_models:
         console.print("[bold cyan]💡 Recommended for first-time users: CodeLlama-7B (Option 1)[/bold cyan]")
         console.print()
-        
-        use_default = Confirm.ask(
-            "[green]Download CodeLlama-7B now?[/green]",
-            default=True
-        )
-        
-        if use_default:
-            model = AVAILABLE_MODELS["1"]
-            console.print(f"\n[cyan]Downloading {model['name']} ({model['size']})...[/cyan]")
-            console.print("[dim]This will take 5-10 minutes on first run.[/dim]")
-            return (model["repo"], model["file"], False, None)
-        else:
-            console.print("[yellow]Cancelled.[/yellow]")
-            return None
     
-    # Let user select from downloadable models
+    # Let user select from downloadable models (always show menu)
     model_choice = Prompt.ask(
         "[cyan]Select model to download[/cyan] [dim](1-5 or 'cancel')[/dim]",
         default="1"
@@ -217,20 +220,12 @@ def select_model() -> Optional[tuple]:
     
     if model_choice in AVAILABLE_MODELS:
         model = AVAILABLE_MODELS[model_choice]
-        console.print(f"\n[cyan]Selected: {model['name']} ({model['size']})[/cyan]")
+        console.print(f"\n[green]✓ Selected: {model['name']} ({model['size']})[/green]")
         console.print(f"[dim]{model['description']}[/dim]")
-        
-        confirm = Confirm.ask(
-            f"\n[green]Download {model['name']}?[/green]",
-            default=True
-        )
-        
-        if confirm:
-            console.print(f"\n[cyan]Downloading... This may take 5-10 minutes.[/cyan]")
-            return (model["repo"], model["file"], False, None)
-        else:
-            console.print("[yellow]Cancelled.[/yellow]")
-            return None
+        console.print()
+        console.print("[cyan]Model will download on first use (5-10 minutes, one-time only)[/cyan]")
+        console.print()
+        return (model["repo"], model["file"], False, None)
     else:
         console.print("[red]Invalid selection.[/red]")
         return None

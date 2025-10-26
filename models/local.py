@@ -8,16 +8,18 @@ from rich.console import Console
 console = Console()
 
 class LocalAdapter:
-    def __init__(self, model_name="TheBloke/CodeLlama-7B-GGUF", model_file="codellama-7b.Q4_K_M.gguf", debug: bool = False):
+    def __init__(self, model_name="TheBloke/CodeLlama-7B-GGUF", model_file="codellama-7b.Q4_K_M.gguf", debug: bool = False, cached_path: str = None):
         """Initialize GGUF model adapter.
         Args:
             model_name: Hugging Face model repo (e.g., TheBloke/CodeLlama-7B-GGUF).
             model_file: Specific GGUF file in repo (e.g., codellama-7b.Q4_K_M.gguf).
             debug: Enable debug logging.
+            cached_path: Direct path to cached model file (skips download if provided).
         """
         self.model_name = model_name
         self.model_file = model_file
         self.debug = debug
+        self.cached_path = cached_path
         self.cache_dir = Path.home() / ".blonde" / "models"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.model_path = self._download_model()
@@ -30,6 +32,18 @@ class LocalAdapter:
         Raises:
             ValueError: If download fails.
         """
+        # If a cached path is provided, use it directly
+        if self.cached_path:
+            cached_file = Path(self.cached_path)
+            if cached_file.exists():
+                console.print(f"[green]✓ Using cached model: {cached_file.name}[/green]")
+                console.print(f"[dim]Path: {self.cached_path}[/dim]")
+                return str(cached_file)
+            else:
+                console.print(f"[yellow]⚠ Cached path not found: {self.cached_path}[/yellow]")
+                console.print(f"[dim]Falling back to download...[/dim]")
+        
+        # Otherwise, download from HuggingFace
         try:
             console.print(f"[cyan]Checking for model {self.model_name}/{self.model_file}...[/cyan]")
             model_path = hf_hub_download(
