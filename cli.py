@@ -22,6 +22,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.progress import Progress
 from rich.status import Status
+from rich.live import Live
 from difflib import unified_diff
 from tenacity import retry, stop_after_attempt, wait_fixed
 from dotenv import load_dotenv
@@ -46,17 +47,22 @@ except ImportError:
     logger = logging.getLogger("blonde")
     logger.debug("Tools system not available.")
 
-try:
-    from model_selector import select_model
-    MODEL_SELECTOR_AVAILABLE = True
-except ImportError:
-    MODEL_SELECTOR_AVAILABLE = False
-
 console = Console()
 app = typer.Typer()
 load_dotenv()
 logging.basicConfig(filename=str(Path.home() / ".blonde/debug.log"), level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("blonde")
+
+try:
+    from model_selector import select_model
+    MODEL_SELECTOR_AVAILABLE = True
+    logger.info("Model selector loaded successfully")
+except ImportError as e:
+    MODEL_SELECTOR_AVAILABLE = False
+    logger.warning(f"Model selector import failed: {e}")
+except Exception as e:
+    MODEL_SELECTOR_AVAILABLE = False
+    logger.error(f"Model selector unexpected error: {e}")
 
 # =====================
 #  Constants
@@ -302,20 +308,28 @@ def animate_logo():
 #         return OpenRouterAdapter(debug=debug)
 
 
-def load_adapter(model_name="openrouter", offline: bool = False, debug: bool = False, gguf_model: str = None):
+def load_adapter(model_name="openrouter", offline: bool = False, debug: bool = False, gguf_model: str = None, cached_path: str = None):
     """Load model adapter with optional GGUF model.
     Args:
         model_name: Online model provider (openrouter, openai, hf).
         offline: Force offline mode.
         debug: Enable debug logging.
         gguf_model: Specific GGUF model (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf).
+        cached_path: Direct path to cached model file (skips download).
     """
     if offline or gguf_model:
         from models.local import LocalAdapter
         if gguf_model:
-            repo, file = gguf_model.split("/", 1) if "/" in gguf_model else (gguf_model, None)
-            return LocalAdapter(model_name=repo, model_file=file, debug=debug)
-        return LocalAdapter(debug=debug)
+            # Split on LAST slash to separate repo from filename
+            # Format: "TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf"
+            if "/" in gguf_model:
+                repo, file = gguf_model.rsplit("/", 1)
+            else:
+                repo, file = gguf_model, None
+            console.print(f"[dim]Loading: repo={repo}, file={file}[/dim]")
+            return LocalAdapter(model_name=repo, model_file=file, debug=debug, cached_path=cached_path)
+        console.print("[dim]Loading default LocalAdapter (CodeLlama)[/dim]")
+        return LocalAdapter(debug=debug, cached_path=cached_path)
     try:
         # Check internet
         import requests
@@ -400,23 +414,53 @@ def load_history() -> list:
             return json.load(f)
     return []
 
-def stream_response(text: str, delay: float = 0.02) -> str:
-    """Streams text like Claude typing.
+def stream_response(text: str, delay: float = 0.01) -> str:
+    """Streams text with markdown rendering like ChatGPT.
     Args:
         text: Text to stream.
-        delay: Delay between chunks.
+        delay: Delay between chunks (characters).
     Returns:
         Full text buffer.
-    Why it works: Improves UX with typewriter effect.
-    Pitfalls: Short texts may look odd; adjust delay.
-    Learning: Explore Rich’s Live for dynamic updates.
+    Why it works: Uses Rich Live to update markdown rendering in real-time.
+    Pitfalls: Very fast on small texts; adjust delay as needed.
+    Learning: Rich's Live allows dynamic content updates without flickering.
     """
     buffer = ""
-    for chunk in text.split():
-        buffer += chunk + " "
-        console.print(chunk, end=" ", style="magenta", highlight=False, soft_wrap=True)
-        time.sleep(delay)
-    console.print("\n")
+    
+    # Split into chunks for smoother streaming (2-3 chars at a time)
+    chunk_size = 3
+    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+    
+    with Live("", console=console, refresh_per_second=20) as live:
+        for chunk in chunks:
+            buffer += chunk
+            
+            # Render current buffer as markdown with cursor
+            try:
+                # Add a blinking cursor effect
+                display_text = buffer + "▊"
+                
+                # Try to render as markdown
+                if "```" in buffer and buffer.count("```") % 2 == 0:
+                    # Complete code block - render it properly
+                    live.update(Markdown(buffer))
+                else:
+                    # Still typing - show as text with cursor
+                    live.update(Text(display_text, style="white"))
+                    
+            except Exception as e:
+                # Fallback to plain text
+                live.update(Text(buffer + "▊", style="white"))
+            
+            time.sleep(delay)
+        
+        # Final render without cursor - use the full render_code_blocks function
+        live.update("")
+    
+    # Now render the complete markdown properly
+    render_code_blocks(buffer)
+    console.print()  # Add spacing
+    
     return buffer
 
 def suggest_terminal_command(user_input: str) -> str | None:
@@ -462,30 +506,42 @@ def chat(
     offline: bool = typer.Option(False, help="Use offline GGUF model"),
     model: str = typer.Option(None, help="Model name (e.g., TheBloke/CodeLlama-7B-GGUF/codellama-7b.Q4_K_M.gguf)"),
     memory: bool = typer.Option(True, help="Enable context memory (remembers past conversations)"),
-    agentic: bool = typer.Option(False, help="Enable agentic mode (AI can use tools)"),
+    agentic: bool = typer.Option(True, help="Enable agentic mode (AI can use tools)"),
     stream: bool = typer.Option(True, help="Stream responses for better UX")
 ):
     """Interactive chat with Blonde - now with memory and agentic capabilities!"""
     global bot
     
+    # DEBUG: Show what we received
+    console.print(f"[red]DEBUG: offline={offline}, model={model}, MODEL_SELECTOR_AVAILABLE={MODEL_SELECTOR_AVAILABLE}[/red]")
+    console.print(f"[red]DEBUG: Condition check: {offline and not model and MODEL_SELECTOR_AVAILABLE}[/red]")
+    
     # Interactive model selection for offline mode
+    cached_model_path = None
     if offline and not model and MODEL_SELECTOR_AVAILABLE:
+        console.print("[dim]Launching model selector...[/dim]")
         selection = select_model()
         if selection is None:
             console.print("[yellow]Cancelled. Exiting.[/yellow]")
             return
         
         repo, file, is_cached, path = selection
+        console.print(f"[dim]Selected: repo={repo}, file={file}[/dim]")
+        model = f"{repo}/{file}"
         if is_cached and path:
-            # Use the cached model directly
-            model = f"{repo}/{file}"
+            # Store cached path to skip download
+            cached_model_path = path
+            console.print(f"[dim]Using cached path: {cached_model_path}[/dim]")
         else:
-            # Will download
-            model = f"{repo}/{file}"
+            console.print(f"[dim]Will download: {model}[/dim]")
     
-    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
+    # Load the adapter
+    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model, cached_path=cached_model_path)
     
-    # Initialize memory manager if enabled
+    # Show logo and welcome
+    animate_logo()
+    
+    # Initialize memory manager if enabled (AFTER logo so it's visible)
     memory_manager = None
     if memory and MEMORY_AVAILABLE:
         try:
@@ -495,7 +551,7 @@ def chat(
             logger.warning(f"Failed to initialize memory: {e}")
             console.print("[yellow]⚠ Memory disabled - install chromadb to enable[/yellow]")
     
-    # Initialize tool registry if agentic mode enabled
+    # Initialize tool registry if agentic mode enabled (AFTER logo so it's visible)
     tool_registry = None
     if agentic and TOOLS_AVAILABLE:
         try:
@@ -504,8 +560,6 @@ def chat(
         except Exception as e:
             logger.warning(f"Failed to initialize tools: {e}")
             console.print("[yellow]⚠ Agentic mode disabled[/yellow]")
-    
-    animate_logo()
     
     # Enhanced welcome message
     welcome_parts = ["Type your prompt below. Use /help for commands."]
@@ -636,6 +690,7 @@ def gen(
     global bot
     
     # Interactive model selection for offline mode
+    cached_model_path = None
     if offline and not model and MODEL_SELECTOR_AVAILABLE:
         selection = select_model()
         if selection is None:
@@ -643,8 +698,10 @@ def gen(
             return
         repo, file, is_cached, path = selection
         model = f"{repo}/{file}"
+        if is_cached and path:
+            cached_model_path = path
     
-    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
+    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model, cached_path=cached_model_path)
     
     # Initialize memory if enabled
     memory_manager = None
@@ -704,6 +761,7 @@ def create(
     global bot
     
     # Interactive model selection for offline mode
+    cached_model_path = None
     if offline and not model and MODEL_SELECTOR_AVAILABLE:
         selection = select_model()
         if selection is None:
@@ -711,8 +769,10 @@ def create(
             return
         repo, file_model, is_cached, path = selection
         model = f"{repo}/{file_model}"
+        if is_cached and path:
+            cached_model_path = path
     
-    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
+    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model, cached_path=cached_model_path)
     
     # Initialize memory and tools
     memory_manager = None
@@ -846,6 +906,7 @@ def fix(
     global bot, repo_map_cache
     
     # Interactive model selection for offline mode
+    cached_model_path = None
     if offline and not model and MODEL_SELECTOR_AVAILABLE:
         selection = select_model()
         if selection is None:
@@ -853,8 +914,10 @@ def fix(
             return
         repo, file, is_cached, path = selection
         model = f"{repo}/{file}"
+        if is_cached and path:
+            cached_model_path = path
     
-    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
+    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model, cached_path=cached_model_path)
     
     # Initialize memory
     memory_manager = None
@@ -1128,6 +1191,7 @@ def doc(
     global bot
     
     # Interactive model selection for offline mode
+    cached_model_path = None
     if offline and not model and MODEL_SELECTOR_AVAILABLE:
         selection = select_model()
         if selection is None:
@@ -1135,8 +1199,10 @@ def doc(
             return
         repo, file, is_cached, path = selection
         model = f"{repo}/{file}"
+        if is_cached and path:
+            cached_model_path = path
     
-    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model)
+    bot = load_adapter(model_name="openrouter", offline=offline, debug=debug, gguf_model=model, cached_path=cached_model_path)
     
     # Initialize memory
     memory_manager = None
