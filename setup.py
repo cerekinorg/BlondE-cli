@@ -43,7 +43,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/YOUR_GITHUB/blonde-cli",
     packages=find_packages(exclude=("tests",)),
-    py_modules=["cli", "utils", "model_selector", "memory", "tools", "server"],
+    py_modules=["cli", "utils", "model_selector", "memory", "tools", "server", "agentic_tools"],
     python_requires=">=3.10",
     install_requires=[
         "typer>=0.9.0",

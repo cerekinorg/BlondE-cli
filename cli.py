@@ -47,6 +47,14 @@ except ImportError:
     logger = logging.getLogger("blonde")
     logger.debug("Tools system not available.")
 
+try:
+    from agentic_tools import EnhancedToolRegistry, TaskPlanner, AgenticExecutor
+    AGENTIC_AVAILABLE = True
+except ImportError:
+    AGENTIC_AVAILABLE = False
+    logger = logging.getLogger("blonde")
+    logger.debug("Enhanced agentic tools not available.")
+
 console = Console()
 app = typer.Typer()
 load_dotenv()
@@ -553,20 +561,34 @@ def chat(
     
     # Initialize tool registry if agentic mode enabled (AFTER logo so it's visible)
     tool_registry = None
-    if agentic and TOOLS_AVAILABLE:
+    agentic_executor = None
+    task_planner = None
+    
+    if agentic and AGENTIC_AVAILABLE:
+        try:
+            enhanced_tools = EnhancedToolRegistry(require_confirmation=True)
+            task_planner = TaskPlanner(bot)
+            agentic_executor = AgenticExecutor(bot, enhanced_tools, task_planner)
+            console.print("[dim]✓ Enhanced agentic mode enabled - I can autonomously complete tasks![/dim]")
+        except Exception as e:
+            logger.warning(f"Failed to initialize agentic tools: {e}")
+            console.print("[yellow]⚠ Agentic mode disabled[/yellow]")
+    elif agentic and TOOLS_AVAILABLE:
         try:
             tool_registry = ToolRegistry(require_confirmation=True, log_calls=True)
-            console.print("[dim]✓ Agentic mode enabled - I can help with tasks![/dim]")
+            console.print("[dim]✓ Basic tool mode enabled[/dim]")
         except Exception as e:
             logger.warning(f"Failed to initialize tools: {e}")
-            console.print("[yellow]⚠ Agentic mode disabled[/yellow]")
+            console.print("[yellow]⚠ Tool mode disabled[/yellow]")
     
     # Enhanced welcome message
     welcome_parts = ["Type your prompt below. Use /help for commands."]
     if memory_manager:
         welcome_parts.append("💭 Memory: ON")
-    if tool_registry:
-        welcome_parts.append("🔧 Agentic: ON")
+    if agentic_executor:
+        welcome_parts.append("🤖 Agentic: ON (Enhanced)")
+    elif tool_registry:
+        welcome_parts.append("🔧 Tools: ON (Basic)")
     if stream:
         welcome_parts.append("⚡ Streaming: ON")
     
@@ -590,6 +612,8 @@ def chat(
             enhanced_help = HELP_TEXT + "\n[green]Enhanced Commands:[/green]\n"
             enhanced_help += " • [bold]/memory[/bold] → show memory stats\n"
             enhanced_help += " • [bold]/tools[/bold] → list available tools\n"
+            enhanced_help += " • [bold]/plan[/bold] → show current execution plan\n"
+            enhanced_help += " • [bold]/agent <task>[/bold] → execute task autonomously\n"
             enhanced_help += " • [bold]/context[/bold] → show conversation context\n"
             console.print(Panel(Text(enhanced_help, justify="left"), border_style="cyan"))
             continue
@@ -617,12 +641,46 @@ def chat(
             continue
             
         # NEW: Handle /tools command
-        if user_input.lower() == "/tools" and tool_registry:
-            tools_list = tool_registry.list_tools()
-            console.print(Panel(f"[cyan]Available tools: {', '.join(tools_list)}[/cyan]", 
-                              border_style="cyan"))
+        if user_input.lower() == "/tools":
+            if agentic_executor:
+                # Show enhanced tools
+                tools = agentic_executor.tools
+                console.print("\n[cyan]📦 Enhanced Agentic Tools:[/cyan]")
+                console.print("\n[yellow]File Operations:[/yellow]")
+                console.print("  • read_file, write_file, edit_file, delete_file, rename_file")
+                console.print("\n[yellow]Code Operations:[/yellow]")
+                console.print("  • replace_in_file, insert_at_line, remove_lines")
+                console.print("\n[yellow]Directory Operations:[/yellow]")
+                console.print("  • list_dir, create_dir, search_files, search_in_files")
+                console.print("\n[yellow]Git Operations:[/yellow]")
+                console.print("  • git_status, git_diff, git_add, git_commit")
+                console.print("\n[yellow]Analysis:[/yellow]")
+                console.print("  • count_lines, run_command")
+                console.print("\n[dim]Type '/agent <your task>' to execute autonomously![/dim]\n")
+            elif tool_registry:
+                tools_list = tool_registry.list_tools()
+                console.print(Panel(f"[cyan]Available tools: {', '.join(tools_list)}[/cyan]", 
+                                  border_style="cyan"))
+            else:
+                console.print("[yellow]No tools available[/yellow]")
             continue
             
+        # NEW: Handle /plan command
+        if user_input.lower() == "/plan" and task_planner:
+            task_planner.display_plan()
+            continue
+            
+        # NEW: Handle /agent command for autonomous execution
+        if user_input.lower().startswith("/agent ") and agentic_executor:
+            task = user_input[7:].strip()  # Remove '/agent '
+            console.print(f"\n[bold cyan]🤖 Executing task autonomously...[/bold cyan]\n")
+            result = agentic_executor.execute_task(task, auto_confirm=False)
+            console.print(f"\n[green]Result:[/green]\n{result}")
+            chat_history.append(("Agent", result))
+            if memory_manager:
+                memory_manager.add_conversation(task, result)
+            continue
+        
         # NEW: Handle /context command
         if user_input.lower() == "/context" and memory_manager:
             context = memory_manager.get_context_for_prompt(user_input, max_context_length=500)
